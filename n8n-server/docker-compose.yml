@@ -1,0 +1,119 @@
+name: lab_n8n # ตั้งชื่อโปรเจกต์ Docker Compose เป็น lab_n8n
+
+services:
+  # ---------------------------------------------------------
+  # 1. PostgreSQL (Database หลักสำหรับเก็บข้อมูลระบบของ n8n)
+  # ---------------------------------------------------------
+  postgres:
+    image: postgres:16 # ใช้ Image PostgreSQL เวอร์ชัน 16
+    container_name: lab_n8n_postgres # ตั้งชื่อ Container ให้จำง่าย
+    restart: always # สั่งให้ Container เริ่มทำงานใหม่เสมอหากหยุดไป (เช่น เครื่องรีสตาร์ท)
+    environment: # ตั้งค่าตัวแปรสภาพแวดล้อมสำหรับสร้างฐานข้อมูลเริ่มต้น
+      - POSTGRES_USER=admin # กำหนด Username เป็น admin
+      - POSTGRES_PASSWORD=password # กำหนด Password
+      - POSTGRES_DB=n8n # สร้าง Database เริ่มต้นชื่อ n8n
+    volumes:
+      # ผูกโฟลเดอร์ postgres_data ในเครื่องโฮสต์ เข้ากับโฟลเดอร์เก็บข้อมูลของ Container 
+      # (เพื่อไม่ให้ข้อมูลหายตอนลบ Container)
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - n8n-network # เชื่อมต่อเข้ากับเน็ตเวิร์กจำลองที่ชื่อ n8n-network
+    healthcheck:
+      # ตรวจสอบว่า Database พร้อมใช้งานหรือยัง โดยใช้คำสั่ง pg_isready
+      test: [ "CMD-SHELL", "pg_isready -U n8n" ] 
+      interval: 5s # เช็คทุกๆ 5 วินาที
+      timeout: 5s # รอผลตอบกลับสูงสุด 5 วินาที
+      retries: 5 # ลองเช็คซ้ำ 5 ครั้งก่อนจะตัดสินว่าใช้งานไม่ได้
+
+  # ---------------------------------------------------------
+  # 2. MySQL Service (Database สำรอง หรือใช้สำหรับเก็บข้อมูลโปรเจกต์อื่นๆ)
+  # ---------------------------------------------------------
+  mysql:
+    image: mysql:8.0 # ใช้ Image MySQL เวอร์ชัน 8.0
+    container_name: lab_n8n_mysql
+    restart: always
+    # สั่งให้ใช้ระบบ Authentication แบบเก่า (บางโปรแกรมอาจมีปัญหากับระบบใหม่ของ MySQL 8)
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_ROOT_PASSWORD=password # รหัสผ่านสำหรับ root
+      - MYSQL_DATABASE=n8n # สร้าง Database เริ่มต้นชื่อ n8n
+      - MYSQL_USER=admin # สร้าง User ทั่วไปชื่อ admin
+      - MYSQL_PASSWORD=password # รหัสผ่านของ User admin
+    volumes:
+      - ./mysql_data:/var/lib/mysql # เก็บรักษาข้อมูล Database ไว้ในเครื่องโฮสต์
+    networks:
+      - n8n-network
+    healthcheck:
+      # เช็คว่า MySQL พร้อมทำงานหรือยังด้วยคำสั่ง mysqladmin ping
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      timeout: 20s
+      retries: 10
+
+  # ---------------------------------------------------------
+  # 3. phpMyAdmin Service (หน้าเว็บสำหรับจัดการ Database MySQL)
+  # ---------------------------------------------------------
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: lab_n8n_phpmyadmin
+    restart: always
+    ports:
+      - "8080:80" # จับคู่พอร์ต 8080 ของเครื่องเรา เข้ากับพอร์ต 80 ของ Container (เข้าผ่าน http://localhost:8080)
+    environment:
+      - PMA_HOST=mysql # ระบุให้เชื่อมต่อไปที่ Container ชื่อ mysql
+      - PMA_USER=root # ใช้ User root ในการล็อกอินเข้า phpMyAdmin
+      - PMA_PASSWORD=password
+    networks:
+      - n8n-network
+    depends_on:
+      - mysql # รอให้ Container mysql ถูกสร้างขึ้นมาก่อน ค่อยรันตัวนี้
+
+  # ---------------------------------------------------------
+  # 4. n8n Service (เครื่องมือ Automation หลัก)
+  # ---------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:2.11.1 # ใช้ n8n เวอร์ชัน 2.11.1
+    user: "root" # รันโปรเซสด้วยสิทธิ์ root ภายใน Container
+    container_name: lab_n8n_app
+    restart: always
+    ports:
+      - "5678:5678" # เปิดพอร์ต 5678 ให้เข้าใช้งาน n8n ผ่าน http://localhost:5678
+    environment:
+      # การตั้งค่าความปลอดภัยและ URL
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=false
+      - N8N_SECURE_COOKIE=false # ปิด Secure Cookie (เพราะเราใช้ http:// ไม่ใช่ https://)
+      - N8N_HOST=http://localhost:5678 # กำหนด Host URL หลัก
+      - N8N_EDITOR_BASE_URL=http://localhost:5678 # กำหนด URL ของหน้า Editor
+      - WEBHOOK_URL=http://localhost:5678 # กำหนด URL สำหรับรับ Webhook
+      # - N8N_HOST=https://n8n.riiixch.com
+      # - N8N_EDITOR_BASE_URL=https://n8n.riiixch.com
+      # - WEBHOOK_URL=https://n8n.riiixch.com
+      
+      # การตั้งค่าเวลา (Timezone)
+      - GENERIC_TIMEZONE=Asia/Bangkok
+      - TZ=Asia/Bangkok
+      
+      # การตั้งค่าเชื่อมต่อฐานข้อมูล (ให้ n8n ไปใช้ PostgreSQL แทน SQLite ที่เป็นค่าเริ่มต้น)
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres # ชี้ไปที่ Container ชื่อ postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n # ชื่อ DB ตามที่ตั้งไว้ด้านบน
+      - DB_POSTGRESDB_USER=admin # Username ตามที่ตั้งไว้ด้านบน
+      - DB_POSTGRESDB_PASSWORD=password # Password ตามที่ตั้งไว้ด้านบน
+    volumes:
+      - ./n8n_data:/home/node/.n8n # เก็บข้อมูลคอนฟิกและ Workflow ของ n8n
+      - ./n8n_data_export:/data_export # โฟลเดอร์สำหรับ Export ข้อมูล
+    networks:
+      - n8n-network
+    depends_on:
+      # บังคับว่าต้องรอให้ postgres และ mysql มีสถานะ "healthy" (ผ่าน healthcheck) ก่อน n8n ถึงจะรัน
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+
+# ---------------------------------------------------------
+# ตั้งค่าเครือข่ายจำลอง (Network) ให้ Container คุยกันเองได้
+# ---------------------------------------------------------
+networks:
+  n8n-network:
+    driver: bridge # ใช้ไดรเวอร์แบบ bridge ซึ่งเป็นค่ามาตรฐานสำหรับ Docker วงเดียวกัน
